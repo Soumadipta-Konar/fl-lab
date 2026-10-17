@@ -1,60 +1,52 @@
-# FL-Lab: Reproducing Foundational Federated Learning
+# fl-lab
 
-A clean, reproducible implementation and empirical study of the foundational algorithms and theoretical concepts in Federated Learning (FL), based on:
+Implementation and empirical reproduction of two foundational federated learning papers:
 
 1. **FedAvg**: [Communication-Efficient Learning of Deep Networks from Decentralized Data](https://arxiv.org/abs/1602.05629) (McMahan et al., AISTATS 2017)
 2. **FL Survey & Taxonomy**: [Advances and Open Problems in Federated Learning](https://arxiv.org/abs/1912.04977) (Kairouz et al., 2021)
 
-This repository is built for researchers and students who want to understand how federated optimization actually behaves under the hood—from mathematical formulation to convergence dynamics, data heterogeneity, loss landscape geometry, and client drift.
+This repo is built for anyone learning federated learning who wants to see how the algorithms actually behave: how convergence changes with local computation, what non-IID data does to model updates, why averaging models requires a shared starting point, and how client drift shows up in numbers.
 
 ---
 
 ## Table of Contents
 
-- [Core Theory & Mathematics](#core-theory--mathematics)
+- [How Federated Learning Works](#how-federated-learning-works)
 - [Repository Structure](#repository-structure)
 - [Installation & Quickstart](#installation--quickstart)
-- [Model Architectures](#model-architectures)
-- [Empirical Results & Plot Explanations](#empirical-results--plot-explanations)
-  - [1. Data Partitioning & Heterogeneity Modeling](#1-data-partitioning--heterogeneity-modeling)
-  - [2. Centralized Baseline (The Accuracy Ceiling)](#2-centralized-baseline-the-accuracy-ceiling)
-  - [3. FedSGD vs. FedAvg (Communication Efficiency)](#3-fedsgd-vs-fedavg-communication-efficiency)
-  - [4. The Non-IID Penalty & Convergence Degradation](#4-the-non-iid-penalty--convergence-degradation)
-  - [5. Weight Space Geometry: Why Common Initialisation is Mandatory](#5-weight-space-geometry-why-common-initialisation-is-mandatory)
-  - [6. Practical System Dynamics (Paper 2 Survey Demos)](#6-practical-system-dynamics-paper-2-survey-demos)
-- [Summary: Rules of Thumb for FL Practitioners](#summary-rules-of-thumb-for-fl-practitioners)
+- [Models](#models)
+- [Results](#results)
+  - [What the data splits look like](#what-the-data-splits-look-like)
+  - [Centralized baseline: the accuracy ceiling](#centralized-baseline-the-accuracy-ceiling)
+  - [FedSGD vs. FedAvg: why local steps matter](#fedsgd-vs-fedavg-why-local-steps-matter)
+  - [What happens when data is non-IID](#what-happens-when-data-is-non-iid)
+  - [Why common initialisation is mandatory](#why-common-initialisation-is-mandatory)
+  - [Practical realities from Paper 2](#practical-realities-from-paper-2)
+- [Practical Rules of Thumb](#practical-rules-of-thumb)
 
 ---
 
-## Core Theory & Mathematics
+## How Federated Learning Works
 
-Federated Learning solves an optimization problem over $K$ decentralized clients without communicating their private datasets $\mathcal{D}_1, \dots, \mathcal{D}_K$:
+In FL, $K$ clients each keep their private data $\mathcal{D}_k$ locally. The server coordinates training to minimize a weighted global loss without collecting raw data:
 
-$$\min_{w} f(w) = \sum_{k=1}^K \frac{n_k}{n} F_k(w) \quad \text{where} \quad F_k(w) = \frac{1}{n_k} \sum_{i \in \mathcal{D}_k} \ell(w; x_i, y_i)$$
+$$\min_{w} f(w) = \sum_{k=1}^K \frac{n_k}{n} F_k(w)$$
 
-Here $n_k = |\mathcal{D}_k|$ is the local sample size, and $n = \sum_k n_k$ is the total sample count.
+where $n_k = |\mathcal{D}_k|$ is client $k$'s dataset size, and $n = \sum_k n_k$ is the total dataset size.
 
-### 1. FedSGD
-In each communication round, the server samples a subset $S_t$ of $m = \max(C \cdot K, 1)$ clients ($C \in (0, 1]$). Each client computes the exact average gradient on its entire local dataset:
+### FedSGD
+In each round, the server picks a fraction $C$ of clients. Each client calculates gradients on all of its data and sends them back. The server averages them and takes a single step:
 
-$$g_k^t = \nabla F_k(w_t)$$
+$$w_{t+1} = w_t - \eta \sum_{k \in S_t} \frac{n_k}{n_t} \nabla F_k(w_t)$$
 
-The server averages these gradients and updates the global model:
+Because the model only takes one step per communication round, training across a network is extremely slow.
 
-$$w_{t+1} = w_t - \eta \sum_{k \in S_t} \frac{n_k}{n_t} g_k^t$$
+### FedAvg
+Instead of sending raw gradients, clients run $E$ local epochs of SGD with batch size $B$ starting from the current global model $w_t$. They take multiple local steps ($u = \frac{E \cdot n_k}{B}$), and send their updated weights $w_k$ back to the server:
 
-FedSGD requires 1 communication round for every single gradient step. In bandwidth-constrained distributed systems, this is impractically slow.
+$$w_{t+1} = \sum_{k \in S_t} \frac{n_k}{n_t} w_k$$
 
-### 2. Federated Averaging (FedAvg)
-Instead of communicating gradients, clients perform $E$ local epochs of SGD using mini-batch size $B$ starting from the global model $w_t$. Each client computes:
-
-$$u = \frac{E \cdot n_k}{B} \quad \text{local gradient steps}$$
-
-obtaining updated local parameters $w_k^{t+1}$. The server aggregates the weights:
-
-$$w_{t+1} = \sum_{k \in S_t} \frac{n_k}{n_t} w_k^{t+1} = w_t + \sum_{k \in S_t} \frac{n_k}{n_t} (w_k^{t+1} - w_t)$$
-
-By adding local computation ($E > 1, B < \infty$), FedAvg dramatically reduces the number of communication rounds required to train a global model.
+Doing more computation on the client cuts down the number of network rounds needed to train the model.
 
 ---
 
@@ -63,22 +55,22 @@ By adding local computation ($E > 1, B < \infty$), FedAvg dramatically reduces t
 ```
 fl-lab/
 ├── notebooks/
-│   ├── data_and_partitions.ipynb    # Data downloading, partition generation, distributions
-│   ├── centralized_baseline.ipynb   # Centralized training ceilings (TwoNN & CNN)
-│   ├── fedsgd_fedavg.ipynb          # Paper 1 sweeps: C participation and E, B computation
-│   ├── noniid.ipynb                 # IID vs. Dirichlet vs. Pathological shard benchmarks
-│   ├── common_init.ipynb            # Loss interpolation (Figure 1 reproduction)
-│   ├── survey_demos.ipynb           # Paper 2: cross-silo/device, dropout, drift, bandwidth
-│   └── plots.ipynb                  # Generates all publication-ready figures
+│   ├── data_and_partitions.ipynb    # Generates IID, shard, and Dirichlet splits
+│   ├── centralized_baseline.ipynb   # Centralized TwoNN & CNN baselines
+│   ├── fedsgd_fedavg.ipynb          # Sweeps for participation C, local epochs E, and batch size B
+│   ├── noniid.ipynb                 # Compares IID vs Dirichlet vs Pathological shards
+│   ├── common_init.ipynb            # Loss interpolation curve (Paper 1 Figure 1)
+│   ├── survey_demos.ipynb           # Cross-silo/device, dropout, bandwidth, client drift
+│   └── plots.ipynb                  # Reads CSVs and renders all figures
 ├── src/
-│   ├── partition.py                 # Partition algorithms (IID, shards, Dirichlet, skew)
-│   ├── models.py                    # Exact PyTorch TwoNN and CNN definitions
-│   ├── fl.py                        # Federated optimization: client_update, fedavg_round
-│   ├── utils.py                     # Seeding, tensor batching, evaluation, parameter counting
-│   └── plots.py                     # Matplotlib plotting routines reading from results/
-├── results/                         # Raw experiment metrics logged as CSV files
-├── plots/                           # Generated 150 DPI figures
-├── requirements.txt                 # Minimal dependency manifest
+│   ├── partition.py                 # Split logic (IID, shards, Dirichlet, skew)
+│   ├── models.py                    # Exact PyTorch TwoNN and CNN architectures
+│   ├── fl.py                        # Federated training loop (client_update, fedavg_round)
+│   ├── utils.py                     # Seeding, tensor loading, evaluation, parameter counting
+│   └── plots.py                     # Plotting functions reading from results/
+├── results/                         # Saved metrics (.csv)
+├── plots/                           # Generated figures (.png)
+├── requirements.txt
 └── README.md
 ```
 
@@ -92,13 +84,13 @@ cd fl-lab
 pip install -r requirements.txt
 ```
 
-Launch the interactive Jupyter interface:
+Run Jupyter to inspect or rerun any experiment:
 
 ```bash
 jupyter notebook notebooks/
 ```
 
-Or execute any experiment directly in headless mode:
+Or execute any notebook from the terminal:
 
 ```bash
 jupyter execute notebooks/fedsgd_fedavg.ipynb
@@ -106,177 +98,165 @@ jupyter execute notebooks/fedsgd_fedavg.ipynb
 
 ---
 
-## Model Architectures
+## Models
 
-Implemented in [`src/models.py`](file:///c:/Users/Soumadipta%20Konar/Desktop/FL-Lab/src/models.py), verified against the exact parameter counts from McMahan et al. 2017:
+Implemented in [`src/models.py`](file:///c:/Users/Soumadipta%20Konar/Desktop/FL-Lab/src/models.py), matching the exact parameter counts from Paper 1:
 
-| Model | Architecture | Parameters | Role in FL-Lab |
+| Model | Architecture | Parameter Count | Purpose |
 | :--- | :--- | :--- | :--- |
-| **TwoNN** | Fully-connected: $784 \to 200 \to 200 \to 10$ with ReLU activations | **199,210** | Fast CPU benchmarking of loss landscapes and client drift |
-| **CNN** | Two $5\times 5$ conv layers (32, 64 channels, same-padding) with $2\times 2$ max-pooling, fully connected layer with 512 units, ReLU, and 10 outputs | **1,663,370** | Realistic vision benchmark establishing the high-capacity accuracy ceiling |
+| **TwoNN** | Fully-connected: $784 \to 200 \to 200 \to 10$ with ReLU | **199,210** | Fast CPU runs for inspecting loss surfaces and client drift |
+| **CNN** | Two $5\times 5$ conv layers (32, 64 channels, same-padding) + max-pool, linear 512, ReLU, 10 outputs | **1,663,370** | Vision benchmark showing performance near the centralized ceiling |
 
 ---
 
-## Empirical Results & Plot Explanations
+## Results
 
-### 1. Data Partitioning & Heterogeneity Modeling
+Here is what happens when you run each experiment, with the plots explained.
 
-Federated datasets deviate from the standard Independent and Identically Distributed (IID) assumption. We model three distinct distributions across $K = 100$ clients ($600$ samples/client):
+### What the data splits look like
 
-#### IID Partition
-Every client receives an identical, uniform draw across all 10 digit classes ($\sim 60$ samples per digit).
+Before training, we need to know how data is divided among clients. In these heatmaps, each row is one of the 100 clients, each column is a digit class (0 to 9), and the color shows how many samples that client has.
+
+#### IID split
+We shuffle all 60,000 MNIST training images and hand 600 random samples to each of the 100 clients.
 
 ![IID Distribution](plots/iid_dist.png)
 
-*Explanation:* The heatmap rows represent the 100 clients; columns represent the 10 digit classes. The uniform light-blue coloration shows that every client has equal representation of all classes. Gradient vectors calculated locally point in approximately the same direction as the global gradient.
+Every client gets roughly 60 samples of every digit (uniform light blue). Because each client sees essentially the same data distribution, their local gradients point in roughly the same direction.
 
-#### Pathological Non-IID (200 Shards)
-The 60,000 training images are sorted by label and partitioned into 200 shards of 300 images each. Each client receives exactly 2 random shards.
+#### Pathological split (Paper 1's stress test)
+In McMahan et al., they sorted the dataset by digit, split it into 200 shards of 300 images each, and gave each client 2 random shards.
 
 ![Pathological Distribution](plots/pathological_dist.png)
 
-*Explanation:* Each horizontal row has exactly two dark-blue entries ($\sim 300$ samples) and 8 white entries (0 samples). Most clients see only 2 digits. When a client performs local training, its parameters overfit to only these 2 classes. This represents the extreme worst-case benchmark for testing federated stability.
+Look across any horizontal row: you see mostly white space, with just two dark blue blocks. Most clients hold only 2 digits (for example, only 3s and 7s). When they train locally, their models overfit completely to those two digits and have no idea the other eight digits exist.
 
-#### Dirichlet Non-IID Label Skew ($\alpha = 0.5$)
-For each class $c$, proportions $p_c \sim \text{Dir}(\alpha \cdot \mathbf{1}_K)$ determine the sample allocation across clients. Smaller $\alpha$ produces higher variance and sharper skew.
+#### Dirichlet split (alpha = 0.5)
+The 2-shard split is an extreme artificial benchmark. To model realistic data heterogeneity (like different hospitals seeing different mixes of patients), we use a Dirichlet distribution with $\alpha = 0.5$.
 
 ![Dirichlet Distribution](plots/dirichlet_dist.png)
 
-*Explanation:* Unlike the artificial 2-shard split, Dirichlet allocation produces a continuous, realistic heterogeneity spectrum. Clients hold varying proportions of different digits, closely mirroring real-world hospital and edge-device silos.
+Clients now have an uneven but continuous mix of digits. Some clients have mostly 1s and 2s, others have a spread of 4s, 7s, and 9s.
 
 ---
 
-### 2. Centralized Baseline (The Accuracy Ceiling)
+### Centralized baseline: the accuracy ceiling
 
-Before evaluating federated algorithms, we train both models on the unified dataset (60,000 samples) to establish the theoretical performance ceiling:
+Before running federated experiments, we train both models on the full dataset (all 60,000 images together) to see the highest accuracy they can reach.
 
 ![Centralized Baseline](plots/centralized.png)
 
-*Key Findings:*
-- **TwoNN Ceiling:** Reaches **97.8%** test accuracy after 10 epochs.
-- **CNN Ceiling:** Reaches **98.9%** test accuracy within 5 epochs.
-- Any federated algorithm's objective is to approach these centralized ceilings with minimal communication rounds.
+- **TwoNN reaches 97.8%** test accuracy after 10 epochs.
+- **CNN reaches 98.9%** test accuracy within 5 epochs.
+
+These numbers give us our benchmark: how close can our federated runs get to this ceiling without ever sharing raw data?
 
 ---
 
-### 3. FedSGD vs. FedAvg (Communication Efficiency)
+### FedSGD vs. FedAvg: why local steps matter
 
-#### Client Participation Fraction ($C$) in FedSGD
-In FedSGD, each selected client runs only $E=1$ epoch with batch size $B = \text{all data}$ ($600$ samples). We sweep $C \in \{0.0, 0.1, 0.2, 0.5, 1.0\}$.
+#### Client participation in FedSGD (varying C)
+Here clients do only 1 epoch with full batch size ($E=1, B=\text{all}$), taking just 1 gradient step per round. We test sampling $C \in \{0.0, 0.1, 0.2, 0.5, 1.0\}$ of clients each round.
 
 ![FedSGD Participation](plots/fedsgd_participation.png)
 
-*Analysis:*
-- $C = 0.0$ (sampling 1 client/round) produces noisy, slow convergence.
-- Increasing client participation $C \ge 0.1$ stabilizes the gradient estimate, but after 8 communication rounds, test accuracy remains below **65%**.
-- **Takeaway:** Merely adding more clients per round in FedSGD does not solve the fundamental communication bottleneck: the model only takes one gradient step per round.
+Sampling only 1 client ($C = 0.0$) is noisy. Sampling more clients ($C \ge 0.1$) smooths things out, but even with 100% participation ($C = 1.0$), accuracy stays below **65% after 8 rounds**. Adding more clients per round does not fix the core problem: the model is only taking one gradient step per communication round.
 
-#### Local Computation in FedAvg ($E$ and $B$)
-FedAvg allows clients to take multiple gradient steps locally before communicating. We fix $C = 0.1$ (10 clients/round) and evaluate:
-1. $E = 1, B = \text{all}$ ($u = 1$ step/round)
-2. $E = 1, B = 50$ ($u = 12$ steps/round)
-3. $E = 5, B = 10$ ($u = 300$ steps/round)
+#### Adding local computation in FedAvg (varying E and B)
+Now we fix $C = 0.1$ (10 clients per round) and let clients do more work locally before sending weights back:
+- $E = 1, B = \text{all}$ (1 step per round)
+- $E = 1, B = 50$ (12 steps per round)
+- $E = 5, B = 10$ (300 steps per round)
 
 ![FedAvg Computation](plots/fedavg_computation.png)
 
-*Analysis:*
-- $E = 5, B = 10$ surges past **90% accuracy in just 1 round**, reaching **94.8% by round 8**.
-- In contrast, $E = 1, B = \text{all}$ reaches only **62% by round 8**.
-- **Theoretical Insight:** Adding local computation ($u=300$) accelerates convergence per communication round by nearly an order of magnitude on IID data, confirming the core thesis of McMahan et al. 2017.
+Look at the difference: $E = 5, B = 10$ passes **90% accuracy in the very first round** and reaches **94.8% by round 8**. The line for $E = 1, B = \text{all}$ is stuck at 62%. Letting clients compute locally cuts the communication rounds needed by nearly 10x.
 
 ---
 
-### 4. The Non-IID Penalty & Convergence Degradation
+### What happens when data is non-IID
 
-We test FedAvg ($E = 5, B = 10, C = 0.1$) across identical seeds on IID, Dirichlet ($\alpha = 0.5$), Dirichlet ($\alpha = 0.1$), and Pathological 200-shard partitions:
+We run the same FedAvg configuration ($E = 5, B = 10, C = 0.1$) across our four partitions:
 
 ![Non-IID Comparison](plots/noniid.png)
 
-*Analysis:*
-- **IID (Green):** Smooth, monotonic convergence directly reaching $>94\%$.
-- **Dirichlet $\alpha = 0.5$ (Orange):** Mild heterogeneity; slightly slower initial ramp but reaches $>93\%$.
-- **Dirichlet $\alpha = 0.1$ (Blue):** Severe label skew; plateaus near $\sim 83\%$.
-- **Pathological 200-shard (Red):** Severe oscillation and instability. Accuracy fluctuates around $\sim 65\%$.
-- **Takeaway:** When clients possess disjoint data distributions, local gradient steps drift toward local minima that conflict with the global objective. Averaging these drifted weights causes an immediate performance penalty.
+- **IID (green):** Climbs smoothly past 94%.
+- **Dirichlet $\alpha = 0.5$ (orange):** Mild skew; ramps slightly slower but still reaches 93%.
+- **Dirichlet $\alpha = 0.1$ (blue):** Severe skew; stalls around 83%.
+- **Pathological 200-shard (red):** Heavy oscillations and drops to around 65%.
+
+When clients have disjoint data, local training pulls each model toward its own local minimum. Averaging these conflicting weights causes accuracy to drop—this is the **non-IID penalty**.
 
 ---
 
-### 5. Weight Space Geometry: Why Common Initialisation is Mandatory
+### Why common initialisation is mandatory
 
-Paper 1 (Figure 1) noted an essential property: **averaging neural network weights only works if models are trained from a shared initialisation point.**
-
-To demonstrate this, we train two TwoNN models ($w_A$ and $w_B$) on disjoint 600-example MNIST subsets under two regimes:
-1. **Shared Initialisation:** Both models start from the exact same random weights $w_0$.
-2. **Independent Initialisation:** Models start from different seeds $w_0^{(A)} \ne w_0^{(B)}$.
-
-We evaluate the full-dataset loss across the interpolation line:
-
-$$w(\theta) = \theta w_A + (1 - \theta) w_B \quad \text{for } \theta \in [-0.2, 1.2]$$
+Can you average two models that started from different random weights? Paper 1 (Figure 1) tested this with a simple experiment:
+1. Train model $w_A$ and model $w_B$ on two disjoint 600-sample subsets starting from the **same initial weights** $w_0$.
+2. Train another pair starting from **different random initial weights**.
+3. Interpolate between them: $w(\theta) = \theta w_A + (1 - \theta) w_B$ for $\theta \in [-0.2, 1.2]$ and evaluate the loss on the full dataset.
 
 ![Common Initialisation](plots/common_init.png)
 
-*Analysis:*
-- **Shared Initialisation (Orange):** The loss curve forms a convex valley. At $\theta = 0.5$ (direct weight average), the loss dips **below** both individual models ($\sim 0.33$). The two models descended into the same basin of attraction.
-- **Independent Initialisation (Blue):** At $\theta = 0.5$, the loss spikes above **$1.2$** (a high loss barrier).
-- **Theoretical Insight:** Neural loss surfaces contain infinite permuted global minima due to neuron permutation symmetry. Models trained from different initialisations wander into different valleys; linearly averaging their weights produces an invalid model that sits on the saddle/barrier between valleys. Shared initialisation is a strict prerequisite for Federated Averaging.
+- **Shared initialisation (orange):** The loss curve is a clean valley. At $\theta = 0.5$ (the exact average of the two models), the loss is actually **lower** than either individual model (~0.33). Because both models started together, they moved into the same loss basin.
+- **Independent initialisation (blue):** At $\theta = 0.5$, the loss blows up past **1.2**.
+
+Neural networks have permutation symmetries (you can swap neurons and get the exact same function). When models start from different seeds, they land in different basins. If you linearly average their weights, you end up on the high-loss barrier between basins. This is why all clients in FL must start from a shared global model.
 
 ---
 
-### 6. Practical System Dynamics (Paper 2 Survey Demos)
+### Practical realities from Paper 2
 
-Kairouz et al. (2021) formalized the distinction between practical federated deployments and operational failure modes.
+Paper 2 (Kairouz et al.) surveys how federated systems behave under real-world conditions.
 
-#### Cross-Silo vs. Cross-Device
-- **Cross-Silo:** Few clients ($K = 10$), large local data ($6000$ samples), full participation ($C = 1.0$). Typical of hospital consortia.
-- **Cross-Device:** Many clients ($K = 100$), smaller data ($600$ samples), partial participation ($C = 0.1$). Typical of mobile devices.
+#### Cross-silo vs. cross-device
+- **Cross-silo:** 10 clients, each with 6,000 samples, all participating every round ($C = 1.0$). Think of 10 hospitals.
+- **Cross-device:** 100 clients, 600 samples each, 10% sampled per round ($C = 0.1$). Think of mobile phones.
 
 ![Settings Comparison](plots/settings.png)
 
-*Analysis:* Cross-silo converges faster and with zero variance because the aggregator sees updates from 100% of the data in every round. Cross-device experiences sampling variance due to client subsampling.
+Cross-silo converges faster and without variance because the aggregator sees all data every round. Cross-device has minor fluctuations due to client sampling.
 
-#### Non-IID Heterogeneity Types
-Data skew is not limited to class labels. We evaluate three distinct forms of heterogeneity:
-1. **Label Skew:** Dirichlet class distribution ($\alpha = 0.5$).
-2. **Quantity Skew:** Identical label proportions, but client dataset sizes follow a Dirichlet distribution ($n_k$ varies from 80 to 2,400 samples).
-3. **Feature Skew:** Identical labels and sample counts, but each client's images are rotated by a client-specific angle $\phi_k = \frac{360^\circ \cdot k}{K}$.
+#### Different types of non-IID data
+Data skew is not just about labels:
+1. **Label skew:** Dirichlet class distribution ($\alpha = 0.5$).
+2. **Quantity skew:** Same label distribution, but some clients have 80 samples while others have 2,400.
+3. **Feature skew:** Same labels, but each client's images are rotated by a client-specific angle.
 
 ![Heterogeneity Types](plots/noniid_types.png)
 
-*Analysis:* Feature rotation skew degrades accuracy more severely than label or quantity skew. When input features are fundamentally transformed across silos, standard FedAvg requires domain-adaptation or personalization layers.
+Feature skew (rotations) hurts accuracy much more than label or quantity skew. When input features change across silos, standard FedAvg needs normalization or personalization layers.
 
-#### Unreliable Clients & Dropout
-In mobile FL, clients drop out mid-round due to battery or network loss. We simulate client dropouts with probability $p \in \{0.0, 0.2, 0.5\}$.
+#### Unreliable clients and dropout
+In mobile networks, clients drop out mid-round due to battery or poor connection. We test dropping clients with probability $p \in \{0.0, 0.2, 0.5\}$.
 
 ![Partial Participation](plots/partial_participation.png)
 
-*Analysis:* Random dropouts act as a stochastic subsampler. While convergence speed is slightly reduced as $p \to 0.5$, FedAvg remains robust to unbiased client dropouts.
+FedAvg handles random dropouts gracefully. While $p = 0.5$ slows convergence slightly, the global model still climbs steadily.
 
-#### Communication Cost
-Communication volume is the primary bottleneck in edge deployments. Total bytes transferred per round for client subset $S_t$:
-
-$$\text{Bytes} = 2 \times |S_t| \times |\text{parameters}| \times 4 \text{ bytes (float32)}$$
+#### Communication cost
+We calculate the actual bandwidth transferred: $\text{Bytes} = 2 \times |S_t| \times |\text{parameters}| \times 4\text{ bytes}$ (downloading and uploading float32 weights).
 
 ![Communication Cost](plots/communication_cost.png)
 
-*Analysis:* For TwoNN ($199,210$ params), each 10-client round transfers $\approx 15.2\text{ MB}$. Cross-silo achieves high accuracy with fewer total megabytes because every round aggregates all data.
+For TwoNN (199,210 params), a 10-client round transfers roughly 15.2 MB. Because cross-silo uses 100% of the data each round, it reaches high accuracy with fewer total megabytes transferred.
 
-#### Direct Measurement of Client Drift
-To quantify client drift directly, we record the client update vectors $\Delta w_k^t = w_k^t - w_t$ and compute the average pairwise cosine similarity:
-
-$$\text{Sim}(t) = \frac{1}{\binom{|S_t|}{2}} \sum_{i < j} \frac{\langle \Delta w_i^t, \Delta w_j^t \rangle}{\|\Delta w_i^t\| \|\Delta w_j^t\|}$$
+#### Measuring client drift directly
+Why does non-IID data hurt FedAvg? We can see it by taking the update vectors $\Delta w_k = w_k - w_t$ of all clients in a round and calculating the average pairwise cosine similarity:
 
 ![Client Drift](plots/client_drift.png)
 
-*Analysis:*
-- **IID (Blue):** High cosine similarity ($>0.9$ in early rounds), showing that all clients agree on the descent direction. As the model converges near the optimum, gradients naturally disperse.
-- **Pathological Non-IID (Orange):** Cosine similarity starts low ($\sim 0.2$) and drops to nearly **$0.05$**. Client updates point in almost orthogonal directions. This provides explicit, quantitative proof of client drift.
+- **IID (blue):** Cosine similarity starts above 0.9. All clients agree on which direction to step.
+- **Pathological non-IID (orange):** Cosine similarity starts around 0.2 and drops toward 0.05. Client updates are nearly perpendicular to each other.
+
+This directly confirms **client drift**: each client descends toward its own private minimum, so their average cancels out useful progress.
 
 ---
 
-## Summary: Rules of Thumb for FL Practitioners
+## Practical Rules of Thumb
 
-1. **Always use common initialisation:** Never average weights from models initialized with different random seeds.
-2. **Local steps accelerate IID training:** On IID data, push $E$ as high as possible and lower $B$ to minimize communication rounds.
-3. **Beware of excessive local epochs on non-IID data:** When data is highly non-IID (low $\alpha$ or disjoint classes), large $E$ induces severe client drift. Practitioners must tune $E$ downward or add proximal penalties (e.g., FedProx).
-4. **Bandwidth determines algorithm choice:** If network bandwidth is cheap, FedSGD offers steady theoretical convergence; in edge/mobile networks, FedAvg is mandatory.
-5. **Feature skew is harder than label skew:** Image rotations and sensor variations require normalization or personalized heads; simple parameter averaging struggles to reconcile rotated features.
+1. **Always share initial weights:** Never average models that started from different random seeds.
+2. **More local steps help on IID data:** If client distributions are balanced, increase $E$ and decrease $B$ to save network communication.
+3. **Watch out for high $E$ on skewed data:** If data is heavily non-IID, taking too many local steps causes client drift. Reduce $E$ or add regularization (like FedProx).
+4. **Network bandwidth dictates the design:** In data centers with fast links, FedSGD converges reliably. On edge devices with limited bandwidth, FedAvg is essential.
+5. **Feature skew is harder than label skew:** If clients see rotated or sensor-distorted images, standard weight averaging struggles and needs feature normalization or personalized layers.
