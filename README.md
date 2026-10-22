@@ -1,11 +1,15 @@
 # fl-lab
 
-Implementation and empirical reproduction of two foundational federated learning papers:
+Reimplementation and small-scale experiments based on two foundational federated learning papers:
 
 1. **FedAvg**: [Communication-Efficient Learning of Deep Networks from Decentralized Data](https://arxiv.org/abs/1602.05629) (McMahan et al., AISTATS 2017)
 2. **FL Survey & Taxonomy**: [Advances and Open Problems in Federated Learning](https://arxiv.org/abs/1912.04977) (Kairouz et al., 2021)
 
 This repo is built for anyone learning federated learning who wants to see how the algorithms actually behave: how convergence changes with local computation, what non-IID data does to model updates, why averaging models requires a shared starting point, and how client drift shows up in numbers.
+
+![Non-IID Comparison](plots/noniid.png)
+
+*Figure: The Non-IID Penalty in FedAvg (TwoNN on MNIST, single seed, 8 rounds). As data heterogeneity increases—from IID (green) to Dirichlet $\alpha = 0.5$ (orange), Dirichlet $\alpha = 0.1$ (blue), and Pathological 2-shard (red)—convergence slows and accuracy drops significantly due to client drift.*
 
 ---
 
@@ -22,6 +26,7 @@ This repo is built for anyone learning federated learning who wants to see how t
   - [What happens when data is non-IID](#what-happens-when-data-is-non-iid)
   - [Why common initialisation is mandatory](#why-common-initialisation-is-mandatory)
   - [Practical realities from Paper 2](#practical-realities-from-paper-2)
+- [Limitations](#limitations)
 - [Practical Rules of Thumb](#practical-rules-of-thumb)
 
 ---
@@ -79,10 +84,12 @@ fl-lab/
 ## Installation & Quickstart
 
 ```bash
-git clone https://github.com/your-username/fl-lab.git
+git clone https://github.com/Soumadipta-Konar/fl-lab.git
 cd fl-lab
 pip install -r requirements.txt
 ```
+
+**Hardware & Expected Runtime:** All TwoNN experiments run on standard CPU in ~1–2 minutes per notebook; no dedicated GPU is required (though PyTorch will automatically utilize CUDA if available).
 
 Run Jupyter to inspect or rerun any experiment:
 
@@ -100,7 +107,7 @@ jupyter execute notebooks/fedsgd_fedavg.ipynb
 
 ## Models
 
-Implemented in [`src/models.py`](file:///c:/Users/Soumadipta%20Konar/Desktop/FL-Lab/src/models.py), matching the exact parameter counts from Paper 1:
+Implemented in [`src/models.py`](src/models.py), matching the exact parameter counts from Paper 1:
 
 | Model | Architecture | Parameter Count | Purpose |
 | :--- | :--- | :--- | :--- |
@@ -146,8 +153,8 @@ Before running federated experiments, we train both models on the full dataset (
 
 ![Centralized Baseline](plots/centralized.png)
 
-- **TwoNN reaches 97.8%** test accuracy after 10 epochs.
-- **CNN reaches 98.9%** test accuracy within 5 epochs.
+- **TwoNN reaches 97.8%** test accuracy after 10 epochs (single seed).
+- **CNN reaches 98.9%** test accuracy within 5 epochs (single seed).
 
 These numbers give us our benchmark: how close can our federated runs get to this ceiling without ever sharing raw data?
 
@@ -156,11 +163,11 @@ These numbers give us our benchmark: how close can our federated runs get to thi
 ### FedSGD vs. FedAvg: why local steps matter
 
 #### Client participation in FedSGD (varying C)
-Here clients do only 1 epoch with full batch size ($E=1, B=\text{all}$), taking just 1 gradient step per round. We test sampling $C \in \{0.0, 0.1, 0.2, 0.5, 1.0\}$ of clients each round.
+Here clients do only 1 epoch with full batch size ($E=1, B=\text{all}$), taking just 1 gradient step per round. We test sampling client fraction $C \in \lbrace 0.0, 0.1, 0.2, 0.5, 1.0 \rbrace$. The number of clients selected per round is $\max(\lfloor C \cdot K \rfloor, 1)$; hence **$C = 0.0$ explicitly means 1 client per round** (the minimum possible participation), rather than zero clients.
 
 ![FedSGD Participation](plots/fedsgd_participation.png)
 
-Sampling only 1 client ($C = 0.0$) is noisy. Sampling more clients ($C \ge 0.1$) smooths things out, but even with 100% participation ($C = 1.0$), accuracy stays below **65% after 8 rounds**. Adding more clients per round does not fix the core problem: the model is only taking one gradient step per communication round.
+Sampling only 1 client per round ($C = 0.0$) is noisy. Sampling more clients ($C \ge 0.1$, i.e. 10 to 100 clients) smooths things out, but even with 100% participation ($C = 1.0$), accuracy stays below **65% after 8 rounds** (single seed; 62.3% at $C=1.0$). Adding more clients per round does not fix the core problem: the model is only taking one gradient step per communication round.
 
 #### Adding local computation in FedAvg (varying E and B)
 Now we fix $C = 0.1$ (10 clients per round) and let clients do more work locally before sending weights back:
@@ -170,7 +177,7 @@ Now we fix $C = 0.1$ (10 clients per round) and let clients do more work locally
 
 ![FedAvg Computation](plots/fedavg_computation.png)
 
-Look at the difference: $E = 5, B = 10$ passes **90% accuracy in the very first round** and reaches **94.8% by round 8**. The line for $E = 1, B = \text{all}$ is stuck at 62%. Letting clients compute locally cuts the communication rounds needed by nearly 10x.
+Look at the difference: $E = 5, B = 10$ passes **90% accuracy in the very first round** and reaches **94.8% by round 8** (single seed). The line for $E = 1, B = \text{all}$ is stuck at 62% (single seed). Letting clients compute locally cuts the communication rounds needed by nearly 10x.
 
 ---
 
@@ -180,10 +187,10 @@ We run the same FedAvg configuration ($E = 5, B = 10, C = 0.1$) across our four 
 
 ![Non-IID Comparison](plots/noniid.png)
 
-- **IID (green):** Climbs smoothly past 94%.
-- **Dirichlet $\alpha = 0.5$ (orange):** Mild skew; ramps slightly slower but still reaches 93%.
-- **Dirichlet $\alpha = 0.1$ (blue):** Severe skew; stalls around 83%.
-- **Pathological 200-shard (red):** Heavy oscillations and drops to around 65%.
+- **IID (green):** Climbs smoothly past 94% (reaches 94.7% at round 8, single seed).
+- **Dirichlet $\alpha = 0.5$ (orange):** Mild skew; ramps slightly slower but still reaches 93% (93.1% at round 8, single seed).
+- **Dirichlet $\alpha = 0.1$ (blue):** Severe skew; stalls around 83% (83.3% at round 8, single seed).
+- **Pathological 200-shard (red):** Heavy oscillations and drops to around 65% (65.2% at round 8, single seed).
 
 When clients have disjoint data, local training pulls each model toward its own local minimum. Averaging these conflicting weights causes accuracy to drop—this is the **non-IID penalty**.
 
@@ -198,8 +205,8 @@ Can you average two models that started from different random weights? Paper 1 (
 
 ![Common Initialisation](plots/common_init.png)
 
-- **Shared initialisation (orange):** The loss curve is a clean valley. At $\theta = 0.5$ (the exact average of the two models), the loss is actually **lower** than either individual model (~0.33). Because both models started together, they moved into the same loss basin.
-- **Independent initialisation (blue):** At $\theta = 0.5$, the loss blows up past **1.2**.
+- **Shared initialisation (orange):** The loss curve is a clean valley. At $\theta = 0.5$ (the exact average of the two models), the loss is actually **lower** than either individual model (~0.33, single seed). Because both models started together, they moved into the same loss basin.
+- **Independent initialisation (blue):** At $\theta = 0.5$, the loss blows up past **1.2** (single seed).
 
 Neural networks have permutation symmetries (you can swap neurons and get the exact same function). When models start from different seeds, they land in different basins. If you linearly average their weights, you end up on the high-loss barrier between basins. This is why all clients in FL must start from a shared global model.
 
@@ -228,28 +235,42 @@ Data skew is not just about labels:
 Feature skew (rotations) hurts accuracy much more than label or quantity skew. When input features change across silos, standard FedAvg needs normalization or personalization layers.
 
 #### Unreliable clients and dropout
-In mobile networks, clients drop out mid-round due to battery or poor connection. We test dropping clients with probability $p \in \{0.0, 0.2, 0.5\}$.
+In mobile networks, clients drop out mid-round due to battery or poor connection. We test dropping clients with probability $p \in \lbrace 0.0, 0.2, 0.5 \rbrace$ (single seed).
 
 ![Partial Participation](plots/partial_participation.png)
 
 FedAvg handles random dropouts gracefully. While $p = 0.5$ slows convergence slightly, the global model still climbs steadily.
 
 #### Communication cost
-We calculate the actual bandwidth transferred: $\text{Bytes} = 2 \times |S_t| \times |\text{parameters}| \times 4\text{ bytes}$ (downloading and uploading float32 weights).
+We calculate the actual bandwidth transferred per round: $\text{Bytes} = 2 \times |S_t| \times |\text{parameters}| \times 4\text{ bytes}$ (accounting for bidirectional download and upload of float32 weights).
 
 ![Communication Cost](plots/communication_cost.png)
 
-For TwoNN (199,210 params), a 10-client round transfers roughly 15.2 MB. Because cross-silo uses 100% of the data each round, it reaches high accuracy with fewer total megabytes transferred.
+For TwoNN (199,210 params), a 10-client round transfers roughly **15.2 MB**:
+- **Cross-silo ($K=10, C=1.0$):** Because all 10 clients participate every round, 100% of the dataset is processed per round. It reaches **89.0% test accuracy in round 1 (15.2 MB)** and **94.4% by round 6 (91.2 MB)**.
+- **Cross-device ($K=100, C=0.1$):** Each round also communicates with 10 clients (15.2 MB/round), but only covers 10% of the client population. It reaches **56.6% accuracy at 15.2 MB** and requires **~76.0 MB (round 5, 84.8%) to 91.2 MB (round 6, 86.0%)** to reach comparable accuracy—requiring over 5× the communication volume to cross 85% accuracy (single seed).
 
 #### Measuring client drift directly
 Why does non-IID data hurt FedAvg? We can see it by taking the update vectors $\Delta w_k = w_k - w_t$ of all clients in a round and calculating the average pairwise cosine similarity:
 
 ![Client Drift](plots/client_drift.png)
 
-- **IID (blue):** Cosine similarity starts above 0.9. All clients agree on which direction to step.
-- **Pathological non-IID (orange):** Cosine similarity starts around 0.2 and drops toward 0.05. Client updates are nearly perpendicular to each other.
+- **IID (blue):** Cosine similarity starts above 0.9 (single seed). All clients agree on which direction to step.
+- **Pathological non-IID (orange):** Cosine similarity starts around 0.2 and drops toward 0.05 (single seed). Client updates are nearly perpendicular to each other.
 
 This directly confirms **client drift**: each client descends toward its own private minimum, so their average cancels out useful progress.
+
+---
+
+## Limitations
+
+This project is built as an educational reimplementation and interactive laboratory rather than a benchmark competition or exact paper reproduction:
+
+1. **Short communication rounds (~8 rounds):** All experiments run for ~8 communication rounds to keep execution fast and accessible on standard CPU hardware (~1–2 minutes per notebook). In contrast, the original paper (McMahan et al., 2017) ran models for hundreds to thousands of rounds to demonstrate asymptotic convergence.
+2. **MNIST dataset only:** Experiments are evaluated exclusively on MNIST digit classification (using TwoNN and small CNN architectures). More complex federated datasets (such as CIFAR-10, EMNIST, or Shakespeare language modeling) are not evaluated here.
+3. **Single-seed runs:** All reported figures and trajectories reflect a single fixed random seed (`seed = 42`). They do not represent multi-seed averaged runs with confidence intervals ($\text{mean} \pm \text{std}$), meaning exact percentages will experience slight variance across different seeds.
+
+These experiments are intended to demonstrate the qualitative mechanics of federated learning—such as the non-IID penalty, client drift, weight space basin geometry, and participation rates—rather than replicate the exact quantitative figures published in the original papers.
 
 ---
 
